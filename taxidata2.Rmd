@@ -1,0 +1,512 @@
+---
+title: Visualizing taxi availability in Singapore over a week in July 2015
+output: html_document
+---
+
+### Introduction
+Singapore's taxis are tracked by the Land Transport Authority (LTA). Their webpage for public transport users [presents](http://www.mytransport.sg/content/mytransport/home/dataMall.html#Traffic_Related) a set of APIs for developers to download realtime locations of ALL free-for-hire taxis in Singapore. Pretty cool! For this project,  taxi availability data was downloaded at every 5 minutes over a week in July 2015. The data, geographical coordinates in JSON format, is stored in a local drive.
+
+Given the taxi locations, the ultimate goal is to visualize how taxi availability in Singapore's various towns and urban areas fluctuate. Would we see a cyclical pattern? Which are the peak hours? How do the weekdays differ from weekends? How do the residential areas differ from the central business district? The project evolves into the following tasks:
+
+- TASK 1: Get coordinates of Singapore's (55 in all) urban planning areas, figure out names for each of these areas.  
+- TASK 2: Get and clean taxi data.
+- TASK 3: Place each taxi data point into the correct UPA.
+- TASK 4: Generate separate taxi data files for different areas.
+- TASK 5: Generate total number of taxis in the area of interest across times of the day.
+- TASK 6: Analyze and compare areas of interest.
+
+The taxi dataset is close to 1 GB; most of the code chunks presented below would take too long time to run for the purpose of compiling an R markdown file. So we chose not to execute them, and to instead import previously-processed-and-written data for analysis. 
+
+
+### Methods and data processing
+
+#### TASK 1: Get coordinates of 55 urban planning areas, figure out what each of these area is.
+
+There are 55 [Urban Planning Areas (UPAs)](https://en.wikipedia.org/wiki/Urban_planning_areas_in_Singapore) in Singapore. One may [visualize](https://www.ura.gov.sg/uol/master-plan/Contacts/View-Planning-Boundaries.aspx) the boundaries at the Urban Redevelopment Authority (URA) website. The boundary coordinates to each area can be figured out by jumping through some hoops:
+
+1. [Downloading the UPAs' boundary coordinates](http://data.gov.sg/Metadata/OneMapMetadata.aspx?id=Planning_Area_Census2010&mid=163212&t=SPATIAL) is pretty straightforward. You get a kml file, which reads as a list of 55 sets of coordinates corresponding to unknown UAPs.
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+## Sub-task 1:
+# Reads the UPA kml file.
+# Returns a list of 55 matrices, each the vertices of a UPA polygon (UPA identity unknown)
+# Each UPA polygon has length(coords[[i]]) vertices
+
+# Loading required libraries.
+library(maptools)
+coords <- getKMLcoordinates(kmlfile = "/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/Planning_Area_Census2010.kml",
+                            ignoreAltitude=FALSE)
+```
+URA's map of the UPAs is [included](https://www.ura.gov.sg/uol/master-plan/Contacts/View-Planning-Boundaries.aspx) here for a quick visual representation of what coordinates we're going to work with:
+
+![Singapore's Urban Planning Areas (A screen-cap of the Urban Redevelopment Authority's interactive map)](/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/URA_UPA_map.png)
+
+
+2. To attribute the right UAP name to the coordinates, each list element is saved as a separate kml file. All kml files are manually opened in Google Earth, matched to the respective UPAs, whose names are manually recorded in a text file "SGP_planning_areas.txt.txt".
+
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+## Sub-task 2: Try to figure out which area does each list element (polygon) correspond to
+# Read all text lines of the kml file.
+coordsraw <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/Planning_Area_Census2010.kml")
+# Each sub-kml chunk corresponding to each UPA is bounded by the text "coordinates"
+# E.g. "<coordinates> 103, 1.38" ... "/coordinates"
+# Get the indices of these indicator lines
+areaindices <- grep("coordinates", coordsraw)
+
+# Create sub-kml files and writing them to local.
+for(i in seq(from=1, to=length(areaindices)-1, by=2)) {    
+    # Create sub-kml files, putting in the 1st chunk (lines 1:25), area-specific chunk, final chunk(lines 40123:40128)
+    objectname <- c(coordsraw[1:25], coordsraw[areaindices[i]:areaindices[i+1]], coordsraw[40123:40128])
+    filename <- paste("coords0", i, "0", i+1, ".kml", sep='')
+    write(objectname, filename)
+}
+
+# Manually,
+# Visualized all areas, one by one, in Google Earth
+# Referring to URA map (https://www.ura.gov.sg/uramaps/?config=config_preopen.xml&preopen=Planning%20Boundaries), deciphered each area's name.
+# Entered all names in a file "SGP_planning_areas.txt"
+
+# Read area names. Note: length(areanames) is the same as length(coords)
+areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+# Convert data of each polygon into a dataframe.
+# Add the area name.
+for(i in 1:length(coords)) {
+    coords[[i]] <- data.frame(coords[[i]])
+    coords[[i]]$Area <- rep(areanames[i], nrow(coords[[i]]))
+}
+```
+At the end of this, we have successfully attributed the boundary coordinates to the UPA they belong.
+
+
+
+#### TASK 2: Get and clean taxi data. write into file.
+
+This task reads all taxi data from local folders and combine them in a single dataframe. It takes long. It's recommended that the resulting clean taxi data be written to file for easier loading in another session.
+
+1. Go through each directory (ordered by date on which data was collected) and read the JSON files. Append the date label.
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+# Loading required libraries.
+library("jsonlite")
+library(httr)
+library(lubridate)
+
+## Read in JSON data
+taxidata <- list()
+filedirs <- list.dirs("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Data")
+for(i in 2:length(filedirs)) {
+    # Go into each directory
+    setwd(filedirs[i])
+    # Set date
+    temp <- strsplit(getwd(), "/")[[1]]
+    date <- temp[length(temp)]
+    files <- list.files()
+    taxidata[[i]] <- list()
+    for(j in 1:length(files)) {
+        # Read in JSON
+        taxidata[[i]][[j]] <- fromJSON(files[j])
+        # append date label
+        taxidata[[i]][[j]]$Date <- date
+        # append time label
+        taxidata[[i]][[j]]$Time <- files[j]
+    }
+}
+```
+
+2. Further clean up the data by combining all list elements into a single dataframe.  Time conversion is implemented in a next step, for it took more time on my system. 
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+## Combine list elements into 1 single dataframe.
+taxidata1 <- list()
+for(i in 2:length(taxidata)) {
+    taxidata1[[i]] <- do.call("rbind", taxidata[[i]])
+}
+taxidata2 <- do.call(rbind, taxidata1)
+```
+The outcome of executing these codes would be a dataframe with taxi latitudes, longitudes, date and time. A portion of the table is shown here:
+
+![Clean taxi data](/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidata_all_head.png)
+
+
+
+#### TASK 3: Find out which UPA each taxi data point belongs to.
+
+This task evaluates each taxi coordinate pair against all 55 of the area polygons, and determines where the data point belongs, using the **in.out()** function from the **mgcv** package.
+
+1. The **in.out()** function takes numerical matrices. Therefore the taxi and UPA coordinates need to be converted.
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+# Loading required library
+library(mgcv)    
+# Note: "taxidata2" is taken from global environment from the previous evaluation, not read from file.
+# Make numerical matrices out of both taxi coordinates and area polygon coordinates
+# Exchange the Latitude and Longitude columns of taxicoords.
+taxicoords1 <- as.matrix(taxidata2[, 2:1])
+# Take only the Latitude and Longitude columns of areacoords
+areacoords1 <- coords
+for(i in 1:length(coords)) {
+    areacoords1[[i]] <- as.matrix(coords[[i]][, 1:2])
+}
+```
+
+2. Go through all rows of taxi data, see if each belongs to which area polygon.
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+inside <- list()
+taxidata2$Area <- character(nrow(taxicoords1))
+for(i in 1:length(areacoords1)) {
+    # Loop through each area. E.g. inside[[1]] cooresponds to all taxis within Pasir Ris.
+    inside[[i]] <- in.out(areacoords1[[i]], taxicoords1)
+    taxidata2$Area[inside[[i]]] <- areacoords1[[i]]$Area[1] # It's a vector of identical characters. Just take the 1st one.
+}
+```
+
+3. Writing data to file.
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+write.table(taxidata2, "/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidata_all.txt") 
+```
+Now the taxi coordinates is appended with with a new "Area" column indicating which area each data point belongs to. Working with a computer with limited memory to handle large datasets, writing the data to file ensures it's retrievable for later analaysis.
+
+
+
+#### TASK 4: Generate separate taxi data for different areas.
+
+This task isolates taxi data of each specific area, further cleans the date and time columns, and writes the area-specific taxi data to file. 55 files will be generated. Cleaning date and time data is done on smaller subsets (sub-areas) of *taxidata2* to prevent depletion of system memory.
+
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+# Note: taxidata2 has the following colnames:
+# "Latitude"  "Longitude" "Date"      "Time"      "Date.Time" "Area"
+
+areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+# Note: Area 26 (North-Eastern Islands) is empty. Writing this file will give the error: 
+# Error in `$<-.data.frame`(`*tmp*`, "IsWday", value = "Weekday") : 
+# replacement has 1 row, data has 0
+    
+# for(i in 1:25) {
+for(i in 27:length(areanames)) {
+    # Get desired area out of taxidata2.
+    Samplearea <- taxidata2[which(taxidata2$Area == areanames[i]), ]
+    # Formate Date and Time.
+    Samplearea$Date <- as.Date(Samplearea$Date)
+    Samplearea$Date.Time <- ymd_hms(paste(Samplearea$Date, Samplearea$Time))
+    # Order data by date and time.
+    Samplearea <- Samplearea[order(Samplearea$Date.Time), ]
+    # Create Wday, IsWday columns
+    Samplearea$Wday <- wday(Samplearea$Date, label = T)
+    Samplearea$IsWday <- "Weekday" # Weekday-to-weekend changes will be made at a later step.
+    write.table(Samplearea,
+                paste("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidatabyarea", i, ".txt", sep = ''),
+                row.names = F,
+                col.names = colnames(Samplearea),
+                sep = "\t")
+}
+```
+
+
+
+#### TASK 5: Tabulate total number of taxis in the area of interest across times of the day.
+
+In this task, the function **taxiavail()** allows users to get taxi data from their area of choice. The function takes 2 parameters: (1) the areaindex; (2) a tolerance values the user desires to compute outliers. In details, it
+
+1. Reads in data corresponding to taxis from a UPA of interest.  
+2. Find total number of taxi at a given date and time.  
+3. Check for outliers. Outliers could be due to errors in LTA measurements.  
+4. Create new data frames.  
+5. Modify the "weekday" columns.
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+# Takes in:
+# 1. A dataframe of taxi coordinates in a UPA of interest (e.g. Clementi) over the entire time duration measured. The time is already correctly formatted.
+# 2. An upper tolerance number of taxis, above which data points measured at these times are considered outliers. E.g. 1000.
+# Computes the total number of taxis at a given time.
+# Returns the available taxis over time for a given area.
+taxiavail <- function(areaindex, tol) {
+    library(lubridate)
+    # Reads in data corresponding to taxis from a UPA of interest.
+    data <- read.table(paste("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidatabyarea", areaindex, ".txt", sep = ''),
+                       sep = "\t",
+                       colClasses = c("numeric", "numeric", "Date", "character", "character", "POSIXct", "factor", "factor"),
+                       skip = 1)
+    colnames(data) <- c("Latitude", "Longitude", "Date", "Time", "Area", "Date.Time", "Wday", "IsWday")
+    
+    # Find total number of taxi at a given date and time.
+    taxiavail <- numeric(length(unique(data$Date.Time)))
+    for(i in 1:length(unique(data$Date.Time))) {
+        taxiavail[i] <- sum(data$Date.Time == unique(data$Date.Time)[i])
+    }
+    
+    # Check for outliers.
+    if(sum(taxiavail > tol) > 0) {
+        outlierindex <- which(taxiavail > tol)
+        for(i in 1:length(outlierindex)) {
+            taxiavail[outlierindex[i]] <- 
+                ave(taxiavail[outlierindex[i]-1], taxiavail[outlierindex[i]+1])            
+        }
+    }
+    # E.g. for Clementi, remove an outlier. taxiSamplearea[427] is over 3000.
+    
+    # Create new data.frame.
+    taxiSamplearea <- data.frame(Date = as.Date(substr(unique(data$Date.Time), 1, 10)),
+                                 Time = unique(data$Date.Time),
+                                 Taxi.avail = taxiavail,
+                                 Wday = wday(unique(data$Date.Time), label = T),
+                                 IsWday = "Weekday",
+                                 stringsAsFactors = F)
+    # Modify the "weekday" columns.
+    taxiSamplearea$IsWday[grep("Sat|Sun", taxiSamplearea$Wday)] <- "Weekend"
+    taxiSamplearea$IsWday <- as.factor(taxiSamplearea$IsWday)
+    
+    return(taxiSamplearea)
+}
+```
+
+
+
+#### TASK 6. Analyze, compare areas of interest
+
+Here, we are plotting the number of taxis in a given time over all days recorded using the **taxiplot ()** function. As an example, we shall compare a CBD area such as "Downtown Core" (areaindex 46) and a residential area such as "Clementi" (areaindex 19).
+
+``` {r, eval=FALSE, message=FALSE, warning=FALSE}
+# Get Clementi and Downtown data.
+Clementi <- taxiavail(19, 1000)
+Downtown <- taxiavail(46, 1000)
+```
+
+The goal here is to find, in each of these areas, at what time is taxi availability at its highest and lowest. The function shall first visually present the taxi availability fluctuations over the days, and then output the actual peak and valley times calculated with our algorithm. In details,  
+1. It smoothens the data using the moving average **SMA()** function from the **TTR** package.  
+2. With the smooth data, it determines peak and valley positions using the **findPeaks()** function from the **quantmod** package.  
+3. Plots the data across the days with the smoothened line-fit. We also differentiate weekends from weekdays.  
+4. While it provides a direct visual, there are 2 shortcomings to the **findPeaks()** algorithm:  
+a. The peak positions calculated are delayed.  
+b. In a highly fluctuating dataset (even after smoothing), the peak positions calculated by a simple calculus "change of sign" algorithm tend to be too numerous, taking into account of insignificant ups and downs. Adjusting the **findPeaks()** threshold doesn't quite solve the problem.  
+Therefore the last part of the **taxiplot()** function tries to quantify the delay, and clarify the real peaks, by manually computing the daily hours at which taxi availability are at its highest and lowest.
+
+``` {r, message=FALSE, warning=FALSE}
+# Takes in:
+# 1. A dataframe of an area, with Date, time, taxiavailable, Weekday info.
+# 2. The area index corresponding to the Samplearea dataframe.
+# 3. The parameter for data smoothing. Larger => average over more data points => smoother
+# 4. The parameter for peakfinding threshold. Lower => more peaks found
+# Plots the data with smoothened line fit; manually calculates the daily peak and valley times.
+# Returns a table comparing daily peak and valley times calculated manually and by the findPeaks() function.
+library(TTR) # for the function SMA()
+library(quantmod) # for the function findPeaks()
+
+taxiplot <- function(Samplearea,
+                     areaindex,
+                     n = 50,
+                     thresh = 0.1) {
+    # Read in the list of area names for plots later.
+    areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+
+    # Smoothen data
+    Samplearea.sm <- Samplearea
+    Samplearea.sm$Taxi.avail <- SMA(Samplearea$Taxi.avail, n = n)
+    # Find peaks from smoothened data
+    p <- findPeaks(Samplearea.sm$Taxi.avail, thresh = thresh)
+    
+    # Plot the data: actual fluctuations with smoothened line fit.
+    quartzFonts(avenir = c("Avenir Book",
+                           "Avenir Black",
+                           "Avenir Book Oblique",
+                           "Avenir Black Oblique"))
+    par(bg = "mintcream",
+        family = "avenir")
+    palette(c("yellowgreen", "lightgoldenrod"))
+    plot(Samplearea$Time,
+         Samplearea$Taxi.avail,
+         col = Samplearea$IsWday,
+         xlab = "Date",
+         ylab = paste("Number of taxis in ", areanames[areaindex], sep = ''))
+    points(Samplearea.sm$Time,
+           Samplearea.sm$Taxi.avail,
+           type = "l",
+           lwd = 5,
+           col = "green4")
+    points(Samplearea.sm$Time[p],
+           Samplearea.sm$Taxi.avail[p],
+           pch = 19,
+           col = "orchid")
+    abline(h = ave(Samplearea.sm$Taxi.avail[p])[1])
+    legend("topright",
+           legend = levels(Samplearea$IsWday),
+           col = 1:length(Samplearea$IsWday),
+           pch = 1)
+    
+    # Find positions of calculated peaks and valleys
+    # Create subsets that correspond to the taxi situation at calculated peak and valley times respectively.
+    Calculatedpeaks <- Samplearea[p, ][which(Samplearea.sm$Taxi.avail[p] > ave(Samplearea.sm$Taxi.avail[p])), ]
+    Calculatedvalleys <- Samplearea[p, ][which(Samplearea.sm$Taxi.avail[p] < ave(Samplearea.sm$Taxi.avail[p])), ]
+    
+    # These calculated peak and valley times lag behind the real ones.
+    # Figure out what this lag is for each day.
+    dailymax <- numeric()
+    dailypeaktime <- list()
+    dailycalcmax <- numeric()
+    dailycalcpeaktime <- list()
+    
+    dailymin <- numeric()
+    dailyvalleytime <- list()
+    dailycalcmin <- numeric()
+    dailycalcvalleytime <- list()
+    for(i in 1:length(unique(Samplearea$Date))) {
+        dateind <- unique(Samplearea$Date)[i]
+        
+        dailymax[i] <- max(Samplearea$Taxi.avail[Samplearea$Date == dateind])
+        dailypeaktime[[i]] <- ave(Samplearea$Time[Samplearea$Date == dateind][Samplearea$Taxi.avail[Samplearea$Date == dateind] == dailymax[i]])[1]
+        dailycalcmax[i] <- max(Calculatedpeaks$Taxi.avail[Calculatedpeaks$Date == dateind])
+        dailycalcpeaktime[[i]] <- ave(Calculatedpeaks$Time[Calculatedpeaks$Date == dateind][Calculatedpeaks$Taxi.avail[Calculatedpeaks$Date == dateind] == dailycalcmax[i]])[1]
+        
+        dailymin[i] <- min(Samplearea$Taxi.avail[Samplearea$Date == dateind])
+        dailyvalleytime[[i]] <- ave(Samplearea$Time[Samplearea$Date == dateind][Samplearea$Taxi.avail[Samplearea$Date == dateind] == dailymin[i]])[1]
+        dailycalcmin[i] <- min(Calculatedvalleys$Taxi.avail[Calculatedvalleys$Date == dateind])
+        dailycalcvalleytime[[i]] <- ave(Calculatedvalleys$Time[Calculatedvalleys$Date == dateind][Calculatedvalleys$Taxi.avail[Calculatedvalleys$Date == dateind] == dailycalcmin[i]])[1]
+        
+    }
+    
+    Peakdiff <- list()
+    Valleydiff <- list()
+    for(i in 1:length(unique(Samplearea$Date))) {
+        Peakdiff[[i]] <- dailycalcpeaktime[[i]][1] - dailypeaktime[[i]][1]
+        Valleydiff[[i]] <- dailycalcvalleytime[[i]][1] - dailyvalleytime[[i]][1]
+    }
+    
+    dailypeakvalley <- data.frame(Date = unique(Samplearea$Date),
+                                  Peak.taxi.no = dailymax,
+                                  Peak.time = do.call(c, dailypeaktime),
+                                  Peak.time.calc = do.call(c, dailycalcpeaktime),
+                                  Valley.taxi.no = dailymin,
+                                  Valley.time = do.call(c, dailyvalleytime),
+                                  Valley.time.calc = do.call(c, dailycalcvalleytime))
+    return(dailypeakvalley)
+}
+```
+
+Now, to apply the above function on Clementi and Downtown:
+``` {r, echo=FALSE, message=FALSE, warning=FALSE}
+# Re-create the Clementi and Downtown datasets by reading in previously-written files.
+Clementi <- read.table("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidatabytime19.txt",
+                       sep = "\t",
+                       colClasses = c("Date", "POSIXct", "numeric", "factor", "factor"),
+                       skip = 1)
+colnames(Clementi) <- c("Date", "Time", "Taxi.avail", "Wday", "IsWday")
+                   
+Downtown <- read.table("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidatabytime46.txt",
+                       sep = "\t",
+                       colClasses = c("Date", "POSIXct", "numeric", "factor", "factor"),
+                       skip = 1)
+colnames(Downtown) <- c("Date", "Time", "Taxi.avail", "Wday", "IsWday")
+
+Clementidaily <- taxiplot(Clementi, areaindex = 19)
+Clementidaily
+Downtowndaily <- taxiplot(Downtown, areaindex = 46)
+Downtowndaily
+```
+
+
+
+### Discussion and conclusion
+With both the Clementi and Downtown datasets, the peak and valley times calculated by **findPeaks()** are consistently 3 hours (approximately) behind the actual peak and valley times of each day. Noting this systematic correction, let's make a few comparisons:  
+
+1. **The number of overall available taxis, during peak times, is higher in the Downtown Core area** (goes to ~ 600) as compared to in Clementi (goes to ~ 250). This number would be even lower for a far-out place such as Mandai, where available taxis could be as low as 0 at a given time.  
+
+2. **The number of available taxis in Downtown goes through more peak-valley cycles** than that in Clementi (8 as compared to 6). This difference may be very large for far-out residential regions such as Hougang. The demands into and out of Downtown are higher, resulting in a large flux of taxis in and out of the area. The movement in a residential area is slower likely owing to lower demand, availability of parking spaces for taxis, and availability of less expensive food and beverage break areas for taxi drivers.  
+
+3. **The demand for Downtown visibly drops on a weekend**, indicating that a large of number of passengers make trips to downtown for business. This makes sense since the "Downtown Core" planning area corresponds to Singapore's financial district. **The drop in demand for Clementi is less obvious**; and may even reverse for far-out residential areas such as Hougang.  
+
+4. With calculated and actual peak taxi hours being rather different, more data is needed to characterize the exact peak hours and any potential between peak hours between Downtown and Clementi.  
+
+
+5. The average weekday peak hours of all UPAs are as follows:
+
+``` {r, echo=FALSE, message=FALSE, warning=FALSE}
+library(TTR) # for the function SMA()
+library(quantmod) # for the function findPeaks()
+
+taxipeak <- function(Samplearea,
+                     areaindex,
+                     n = 50,
+                     thresh = 0.1) {
+    # Read in the list of area names for plots later.
+    areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+
+    # Smoothen data
+    Samplearea.sm <- Samplearea
+    Samplearea.sm$Taxi.avail <- SMA(Samplearea$Taxi.avail, n = n)
+    # Find peaks from smoothened data
+    p <- findPeaks(Samplearea.sm$Taxi.avail, thresh = thresh)
+        
+    # Find positions of calculated peaks and valleys
+    # Create subsets that correspond to the taxi situation at calculated peak and valley times respectively.
+    Calculatedpeaks <- Samplearea[p, ][which(Samplearea.sm$Taxi.avail[p] > ave(Samplearea.sm$Taxi.avail[p])), ]
+    Calculatedvalleys <- Samplearea[p, ][which(Samplearea.sm$Taxi.avail[p] < ave(Samplearea.sm$Taxi.avail[p])), ]
+    
+    # These calculated peak and valley times lag behind the real ones.
+    # Figure out what this lag is for each day.
+    dailymax <- numeric()
+    dailypeaktime <- list()
+    dailycalcmax <- numeric()
+    dailycalcpeaktime <- list()
+    
+    dailymin <- numeric()
+    dailyvalleytime <- list()
+    dailycalcmin <- numeric()
+    dailycalcvalleytime <- list()
+    for(i in 1:length(unique(Samplearea$Date))) {
+        dateind <- unique(Samplearea$Date)[i]
+        
+        dailymax[i] <- max(Samplearea$Taxi.avail[Samplearea$Date == dateind])
+        dailypeaktime[[i]] <- ave(Samplearea$Time[Samplearea$Date == dateind][Samplearea$Taxi.avail[Samplearea$Date == dateind] == dailymax[i]])[1]
+        dailycalcmax[i] <- max(Calculatedpeaks$Taxi.avail[Calculatedpeaks$Date == dateind])
+        dailycalcpeaktime[[i]] <- ave(Calculatedpeaks$Time[Calculatedpeaks$Date == dateind][Calculatedpeaks$Taxi.avail[Calculatedpeaks$Date == dateind] == dailycalcmax[i]])[1]
+        
+        dailymin[i] <- min(Samplearea$Taxi.avail[Samplearea$Date == dateind])
+        dailyvalleytime[[i]] <- ave(Samplearea$Time[Samplearea$Date == dateind][Samplearea$Taxi.avail[Samplearea$Date == dateind] == dailymin[i]])[1]
+        dailycalcmin[i] <- min(Calculatedvalleys$Taxi.avail[Calculatedvalleys$Date == dateind])
+        dailycalcvalleytime[[i]] <- ave(Calculatedvalleys$Time[Calculatedvalleys$Date == dateind][Calculatedvalleys$Taxi.avail[Calculatedvalleys$Date == dateind] == dailycalcmin[i]])[1]
+        
+    }
+    
+    Peakdiff <- list()
+    Valleydiff <- list()
+    for(i in 1:length(unique(Samplearea$Date))) {
+        Peakdiff[[i]] <- dailycalcpeaktime[[i]][1] - dailypeaktime[[i]][1]
+        Valleydiff[[i]] <- dailycalcvalleytime[[i]][1] - dailyvalleytime[[i]][1]
+    }
+    
+    dailypeakvalley <- data.frame(Date = unique(Samplearea$Date),
+                                  Peak.taxi.no = dailymax,
+                                  Peak.time = do.call(c, dailypeaktime),
+                                  Peak.time.calc = do.call(c, dailycalcpeaktime),
+                                  Valley.taxi.no = dailymin,
+                                  Valley.time = do.call(c, dailyvalleytime),
+                                  Valley.time.calc = do.call(c, dailycalcvalleytime))
+    return(dailypeakvalley)
+}
+
+# Evaluate average peak hour and peak taxi numbers on weekdays, for all areas.
+areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+
+Wkdaypeak <- data.frame(Area = character(length(areanames)),
+                        Peak.Time = numeric(length(areanames)),
+                        Peak.Taxi.Number = numeric(length(areanames)),
+                        stringsAsFactors = F)
+for(i in 1:length(areanames)) {
+    if(i != 26) {
+        Samplearea <- read.table(paste("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Dataframes/taxidatabytime", i, ".txt", sep = ''),
+                                 sep = "\t",
+                                 colClasses = c("Date", "POSIXct", "numeric", "factor", "factor"),
+                                 skip = 1)
+        colnames(Samplearea) <- c("Date", "Time", "Taxi.avail", "Wday", "IsWday")               
+        Areadaily <- taxipeak(Samplearea, areaindex = i)
+        Wkdaypeak$Peak.Time[i] <- ave(Areadaily$Peak.time[Areadaily$Date != "2015-07-11" & Areadaily$Date != "2015-07-12"])[1]
+        Wkdaypeak$Peak.Taxi.Number[i] <- round(ave(Areadaily$Peak.taxi.no)[1])
+    }
+}
+Wkdaypeak$Area <- areanames
+Wkdaypeak$Peak.Time <- substring(as.POSIXct(Wkdaypeak$Peak.Time, origin = "1970-01-01"), 12)
+
+library(knitr)
+kable(Wkdaypeak, format = "markdown")
+kable(Wkdaypeak)
+```
+
+This study offers preliminary insights into taxi distribution in Singapore, with a meaningful assignment of taxi locations into Singapore's urban planning areas - a platform for further analysis.
+
+### Acknowledgement
+[Michael Ke Zhang](https://www.linkedin.com/in/michaelkezhang), Product Manager at GrabTaxi, obtained the data from data.gov.sg.
