@@ -1,0 +1,122 @@
+Visualize taxi distribution in Singapore over a week in July 2015
+========================================================
+author: Ying JIANG
+date: `r date()`
+
+Background: Tracking taxis in Singapore
+========================================================
+
+Singapore's taxis are tracked by the government agency Land Transport Authority. The agency [provides](http://www.mytransport.sg/content/mytransport/home/dataMall.html#Traffic_Related) data on realtime locations of free-for-hire taxis. For this project,
+
+- Geographical coordinates of taxis were downloaded at every 5 minutes over a week in July 2015 (7th - 15th).
+- The [names](https://en.wikipedia.org/wiki/Urban_planning_areas_in_Singapore) and [coordinates](http://data.gov.sg/Metadata/OneMapMetadata.aspx?id=Planning_Area_Census2010&mid=163212&t=SPATIAL) of Singapore's 55 Urban Planning Areas were downloaded. [Here's](https://www.ura.gov.sg/uol/master-plan/Contacts/View-Planning-Boundaries.aspx) to visualize the Areas at a glance.
+- Eventually, we get the numbers of free-for-hire taxis in each Area for 7 days.
+
+The app
+========================================================
+
+This app helps the interested user visualize the taxi availability across Singapore from 7th - 15th July 2015. The user enters the area code for the neighborhood of interest, and sees the area highlighted on a map, with a grey circle indicating the number of taxis at peak hours.
+
+```{r, echo=FALSE, results='asis'}
+library(magrittr)
+library(leaflet)
+library(maptools) # for getKMLcoordinate()
+library(rgeos)
+library(sp)
+
+setwd("/Users/yingjiang/Dropbox/Learnings/Stats_data/Coursework/Data_science_spec/Data_science_C9/Project/Singapore_taxi")
+coords <- getKMLcoordinates(kmlfile = "Planning_Area_Census2010.kml",
+                            ignoreAltitude=FALSE)
+# Clean data: remove last column
+for(i in 1:length(coords)) {
+    coords[[i]] <- coords[[i]][, 1:2]
+}
+    
+# Get corresponding names of Singapore's 55 planning areas
+areanames_reg <- read.table("SGP_planning_areas_reg.txt",
+                            sep = "\t",
+                            header = T)
+areanames <- as.character(areanames_reg$Neighborhood)
+
+inputarea <- 1
+Samplearea <- read.table(paste("taxidatabytime", inputarea, ".txt", sep=''),
+                         sep = "\t",
+                         colClasses = c("Date", "POSIXct", "numeric", "factor", "factor"),
+                         skip = 1)
+colnames(Samplearea) <- c("Date", "Time", "Taxi.avail", "Wday", "IsWday")
+
+SPDF <- SpatialPointsDataFrame(coords=coords[[inputarea]], data = data.frame(coords[[inputarea]]))
+SP_centroid <- gCentroid(SPDF)
+
+# df = data.frame(lat = coords[[inputarea]][, 1],
+#                 lng = coords[[inputarea]][, 2])
+# leaflet(df) %>%
+#     addTiles()
+# %>% addCircleMarkers(radius = ~size, color = ~color, fill = FALSE)
+# %>% addCircleMarkers(radius = runif(100, 4, 10), color = c('red'))
+
+leaflet() %>%
+addTiles() 
+# addPolygons(data=coords[[inputarea]], weight=2) %>%
+# addMarkers(as.numeric(data.frame(SP_centroid))[1],
+#            as.numeric(data.frame(SP_centroid))[2],
+#            popup = paste("Area ", inputarea, ": ", areanames[inputarea], sep='')) %>%
+# addCircles(as.numeric(data.frame(SP_centroid))[1],
+#            as.numeric(data.frame(SP_centroid))[2],
+#            radius = max(Samplearea$Taxi.avail), weight = 1, color = "#777777",
+#            fillOpacity = 0.7)
+
+```
+
+
+Fluctuations in free-for-hire taxis
+========================================================
+
+The user could further enter plot parameters to visualize the peaks and valleys in the cyclical free-for-hire taxi data. Weekend's data is differentiated from weekday's by color. The raw data is superimposed with a smoothened trace, highlighted with peak and valley positions.
+
+```{r, echo=FALSE}
+library(TTR) # for the function SMA()
+library(quantmod) # for the function findPeaks()
+# Smoothen data
+setwd("/Users/yingjiang/Dropbox/Learnings/Stats_data/Coursework/Data_science_spec/Data_science_C9/Project/Singapore_taxi")
+inputarea = 1
+Samplearea <- read.table(paste("taxidatabytime", inputarea, ".txt", sep=''),
+                         sep = "\t",
+                         colClasses = c("Date", "POSIXct", "numeric", "factor", "factor"),
+                         skip = 1)
+colnames(Samplearea) <- c("Date", "Time", "Taxi.avail", "Wday", "IsWday")
+Samplearea.sm <- Samplearea
+Samplearea.sm$Taxi.avail <- SMA(Samplearea$Taxi.avail, n = 50)
+# Find peaks from smoothened data
+p <- findPeaks(Samplearea.sm$Taxi.avail, thresh = 0.1)
+# Plot data
+plot(Samplearea$Time,
+     Samplearea$Taxi.avail,
+     col = Samplearea$IsWday,
+     pch = 20,
+     xlab = "Date",
+     ylab = paste("Number of taxis in ", areanames[inputarea], sep = ''))
+points(Samplearea.sm$Time,
+               Samplearea.sm$Taxi.avail,
+               type = "l",
+               lwd = 4,
+               col = "green4")
+points(Samplearea.sm$Time[p],
+               Samplearea.sm$Taxi.avail[p],
+               pch = 19,
+               col = "orchid")
+        abline(h = ave(Samplearea.sm$Taxi.avail[p])[1])
+        legend("topright",
+               legend = levels(Samplearea$IsWday),
+               col = 1:length(Samplearea$IsWday),
+               pch = 1)
+
+```
+
+Impact and future work
+========================================================
+
+This study offered preliminary insights into taxi distribution in Singapore, with assignment of taxi locations into Singapore's urban planning areas - a platform for further analysis.
+
+More meaningful data would come from observing the cycles through more number of days, so that we could predict the taxi availability in various neighborhoods (e.g. the central financial district versus a remote residential area). If individual taxis' could be tracked, we could also predict the flow and traffic patterns for more efficient urban transport design.
+

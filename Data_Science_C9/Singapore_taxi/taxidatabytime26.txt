@@ -1,0 +1,3 @@
+"Date"	"Time"	"Taxi.avail"	"Wday"	"IsWday"
+NA	NA NA	NA	NA	NA
+

@@ -15,6 +15,28 @@ for(i in 1:length(coords)) {
 }
 # We get a list of 55 dataframes
 
+# Adding the region to each planning area:
+areanames <- readLines("/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas.txt")
+areanames <- as.data.frame(areanames)
+areanames$Region <- character(55)
+colnames(areanames) <- c("Neighborhood", "Region")
+areanames$Region[grep("Bishan|Bukit Merah|Bukit Timah|Novena|Potong Pasir|Queenstown|Tanglin|Tiong Bahru|Toa Payoh|Southern Islands",
+                      areanames$Neighborhood)] <- "Central"
+areanames$Region[grep("Bras Basah|Chinatown|Downtown Core|Marina Bay|Marina Centre|Marina East|Marina South|Newton|Orchard|Outram|Raffles Place|River Valley|Rochor|Tanjong Pagar|Straits View|Singapore River|Museum",
+                      areanames$Neighborhood)] <- "City central"        
+areanames$Region[grep("Bedok|Changi|Changi Bay|Changi East|Changi Village|Geylang|Kallang|Kallang Bahru|Katong|Marine Parade|Paya Lebar|Pasir Ris|Siglap|Tampines|Tampines North|Ubi",
+                      areanames$Neighborhood)] <- "East"        
+areanames$Region[grep("Central Water Catchment|Lim Chu Kang|Mandai|Sembawang|Simpang|Sungei Kadut|Woodlands|Yishun",
+                      areanames$Neighborhood)] <- "North"        
+areanames$Region[grep("Ang Mo Kio|Hougang|North-eastern Islands|Punggol|Seletar|Sengkang|Senoko|Serangoon|Serangoon Gardens|Serangoon North|North-Eastern Islands",
+                      areanames$Neighborhood)] <- "North-east"        
+areanames$Region[grep("Bukit Batok|Bukit Panjang|Boon Lay|Bulim|Choa Chu Kang|Clementi|Joo Koon|Jurong East|Jurong West|Tengah|Tuas|Tuas South|Western Islands|Western Water Catchment|Pioneer",
+                      areanames$Neighborhood)] <- "West"        
+write.table(areanames,
+            "/Users/yingjiang/Dropbox/Learnings/Stats_data/Projects/taxi_data/Planning_areas/SGP_planning_areas_reg.txt",
+            row.names = F,
+            col.names = colnames(areanames),
+            sep = "\t")
 
 ### TASK 3: Get and clean taxi data
 
